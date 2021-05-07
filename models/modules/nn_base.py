@@ -12,10 +12,10 @@ except:
     pass
 
 
-
+# target: 规定自定义Module的四个必须重写的模块
 class MyModule(nn.Module):
 
-    def forward(self, x):
+    def forward(self, x): # 必须重写
         raise NotImplementedError
 
     @property
@@ -31,6 +31,7 @@ class MyModule(nn.Module):
         raise NotImplementedError
 
 
+# target: 规定自定义Network的四个必须重写的模块
 class MyNetwork(MyModule):
 
     def forward(self, x):

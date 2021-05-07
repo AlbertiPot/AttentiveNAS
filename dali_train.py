@@ -24,6 +24,7 @@ import torch.utils.data
 import torch.utils.data.distributed
 
 from data.data_loader import build_data_loader
+from data.dali_data_loader import build_dali_data_loader
 
 from utils.config import setup
 import utils.saver as saver
@@ -53,7 +54,6 @@ parser.add_argument('--dist-url', default="tcp://127.0.0.1:10001", type=str,
 
 logger = logging.get_logger(__name__)
 
-
 def build_args_and_env(run_args):
 
     assert run_args.config_file and os.path.isfile(run_args.config_file), 'cannot locate config file'
@@ -73,7 +73,7 @@ def build_args_and_env(run_args):
         os.makedirs(args.models_save_dir)
 
     #backup config file
-    saver.copy_file(args.config_file, '{}/{}'.format(args.models_save_dir, os.path.basename(args.config_file))) # 复制config file到saved_file文件架下
+    saver.copy_file(args.config_file, '{}/{}'.format(args.models_save_dir, os.path.basename(args.config_file))) # 复制config file yaml到saved_file文件架下
 
     args.checkpoint_save_path = os.path.join(
         args.models_save_dir, 'attentive_nas.pth.tar'
@@ -111,7 +111,7 @@ def main():
     assert args.world_size > 1, 'only support ddp training'
 
 
-def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，
+def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第一个位置，由mp.spawn产生
     args.gpu = gpu  # local rank, local machine cuda id # 本地编号和gpu号
     args.local_rank = args.gpu
     args.batch_size = args.batch_size_per_gpu
@@ -135,7 +135,7 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，
 
     # Setup logging format.
     logging.setup_logging(args.logging_save_path, 'w')
-
+    
     logger.info(f"Use GPU: {args.gpu}, machine rank {args.machine_rank}, num_nodes {args.num_nodes}, \
                     gpu per node {ngpus_per_node}, world size {args.world_size}")
                     
@@ -175,8 +175,9 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，
     if not getattr(args, 'inplace_distill', True):
         soft_criterion = None
 
-    ## load dataset, train_sampler: distributed
-    train_loader, val_loader, train_sampler =  build_data_loader(args)
+    ## load dali_data_loader
+    args.dali_cpu = False
+    train_loader, val_loader =  build_dali_data_loader(args)
     args.n_iters_per_epoch = len(train_loader)
 
     logger.info( f'building optimizer and lr scheduler, \
@@ -191,8 +192,8 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，
     logger.info(args)
 
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
+        # if args.distributed:
+        #     train_sampler.set_epoch(epoch)
 
         args.curr_epoch = epoch
         logger.info('Training lr {}'.format(lr_scheduler.get_lr()[0]))
@@ -245,12 +246,12 @@ def train_epoch(
 
     num_updates = epoch * len(train_loader)
 
-    for batch_idx, (images, target) in enumerate(train_loader):
+    for batch_idx, data_list in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        images = images.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+        images = data_list[0]['data']
+        target = data_list[0]['label'].squeeze().long()
 
         # total subnets to be sampled
         num_subnet_training = max(2, getattr(args, 'num_arch_training', 2))
@@ -361,7 +362,7 @@ def validate(
         'attentive_nas_max_net': {},
     }
 
-    acc1_list, acc5_list = attentive_nas_eval.validate(
+    acc1_list, acc5_list = attentive_nas_eval.dali_validate(
         subnets_to_be_evaluated,
         train_loader,
         val_loader, 

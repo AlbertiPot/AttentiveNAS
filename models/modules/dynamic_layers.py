@@ -14,8 +14,11 @@ from .nn_utils import int2list, get_net_device, copy_bn, build_activation, make_
 from .nn_base import MyModule, MyNetwork
 
 
+# target: 先按照最大的参数生成实例，forward根据设置的active参数进行前向计算，activate参数在本类实例化时最大值，在上层的dynamic model采样后用set修改，进一步下传到dynamic_ops中修改通道数
+# search space: active_kernel_size对卷积核大小k，active_expand_ratio对扩张率c，active_out_channel对通道数c， note这里没有层数，在上一层dynamy_model考虑了
 class DynamicMBConvLayer(MyModule):
     
+    #输入通道数、输出通道数、kernel_size等都是一个list，包含所有的可能操作
     def __init__(self, in_channel_list, out_channel_list,
                  kernel_size_list=3, expand_ratio_list=6, stride=1, act_func='relu6', use_se=False, channels_per_group=1):
         super(DynamicMBConvLayer, self).__init__()
@@ -32,16 +35,18 @@ class DynamicMBConvLayer(MyModule):
         self.channels_per_group = channels_per_group
         
         # build modules
-        max_middle_channel = round(max(self.in_channel_list) * max(self.expand_ratio_list))
-        if max(self.expand_ratio_list) == 1:
+        # inverted bottleneck
+        max_middle_channel = round(max(self.in_channel_list) * max(self.expand_ratio_list)) # 找list中最大输入通道*最大扩张率，获得最大的1×1卷积
+        if max(self.expand_ratio_list) == 1:            # 扩张率≤1的，不是inverted bottleneck
             self.inverted_bottleneck = None
-        else:
+        else:                                           # 反之，inverted bottleneck
             self.inverted_bottleneck = nn.Sequential(OrderedDict([
-                ('conv', DynamicPointConv2d(max(self.in_channel_list), max_middle_channel)),
+                ('conv', DynamicPointConv2d(max(self.in_channel_list), max_middle_channel)), # 最大输入通道数 → 上面得到的最大1×1输出通道数
                 ('bn', DynamicBatchNorm2d(max_middle_channel)),
                 ('act', build_activation(self.act_func, inplace=True)),
             ]))
         
+        # depth_conv confirmed with se
         self.depth_conv = nn.Sequential(OrderedDict([
             ('conv', DynamicSeparableConv2d(max_middle_channel, self.kernel_size_list, stride=self.stride, channels_per_group=self.channels_per_group)),
             ('bn', DynamicBatchNorm2d(max_middle_channel)),
@@ -50,6 +55,7 @@ class DynamicMBConvLayer(MyModule):
         if self.use_se:
             self.depth_conv.add_module('se', DynamicSE(max_middle_channel))
         
+        # linear 仅1×1卷积无激活
         self.point_linear = nn.Sequential(OrderedDict([
             ('conv', DynamicPointConv2d(max_middle_channel, max(self.out_channel_list))),
             ('bn', DynamicBatchNorm2d(max(self.out_channel_list))),
@@ -64,13 +70,15 @@ class DynamicMBConvLayer(MyModule):
     def forward(self, x):
         in_channel = x.size(1)
         
-        if self.inverted_bottleneck is not None:
+        # 根据类变量设置激活的卷积通道数
+        if self.inverted_bottleneck is not None:                                    # 下传到dynamic_ops中修改
             self.inverted_bottleneck.conv.active_out_channel = \
-                make_divisible(round(in_channel * self.active_expand_ratio), 8)
+                make_divisible(round(in_channel * self.active_expand_ratio), 8)     # 根据self.active_expand_ratio设置inverted_bottleneck的通道数
 
-        self.depth_conv.conv.active_kernel_size = self.active_kernel_size
-        self.point_linear.conv.active_out_channel = self.active_out_channel
+        self.depth_conv.conv.active_kernel_size = self.active_kernel_size           # 设置卷积kernel size
+        self.point_linear.conv.active_out_channel = self.active_out_channel         # 设置激活最后一个1×1卷积核的输出通道数
         
+        # forward
         if self.inverted_bottleneck is not None:
             x = self.inverted_bottleneck(x)
         x = self.depth_conv(x)
@@ -104,6 +112,7 @@ class DynamicMBConvLayer(MyModule):
 
     ############################################################################################
 
+    # target: 返回的是当前active参数的静态block
     def get_active_subnet(self, in_channel, preserve_weight=True):
         middle_channel = make_divisible(round(in_channel * self.active_expand_ratio), 8)
         channels_per_group = self.depth_conv.conv.channels_per_group
@@ -211,7 +220,7 @@ class DynamicConvBnActLayer(MyModule):
         self.act_func = act_func
         
         self.conv = DynamicPointConv2d(
-            max_in_channels=max(self.in_channel_list), max_out_channels=max(self.out_channel_list),
+            max_in_channels=max(self.in_channel_list), max_out_channels=max(self.out_channel_list), # 按照最大的通道首次实例化
             kernel_size=self.kernel_size, stride=self.stride, dilation=self.dilation,
         )
         if self.use_bn:
@@ -223,7 +232,7 @@ class DynamicConvBnActLayer(MyModule):
         self.active_out_channel = max(self.out_channel_list)
     
     def forward(self, x):
-        self.conv.active_out_channel = self.active_out_channel
+        self.conv.active_out_channel = self.active_out_channel # 根究active参数，修改dynamic_ops中的算子的参数（每次调用forwar中时会有根据新的值重设参数）
         
         x = self.conv(x)
         if self.use_bn:
@@ -285,7 +294,7 @@ class DynamicLinearLayer(MyModule):
         #else:
         #    self.dropout = None
         self.linear = DynamicLinear(
-            max_in_features=max(self.in_features_list), max_out_features=self.out_features, bias=self.bias
+            max_in_features=max(self.in_features_list), max_out_features=self.out_features, bias=self.bias # DynamicLinear仅仅是根据最大的输入特征一次生成，后期无变动
         )
     
     def forward(self, x):

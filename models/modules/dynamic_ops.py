@@ -12,6 +12,7 @@ import torch.distributed as dist
 from .nn_utils import get_same_padding, make_divisible, sub_filter_start_end
 from .static_layers import SELayer
 
+# note 注意dynamic ops 不同往常在init中定义好module，这里在init中定义实例变量，可能在实例方法中做一些修改，赋给在forwar方法中新的F.conv2函数
 
 class DynamicSeparableConv2d(nn.Module):
     KERNEL_TRANSFORM_MODE = None  # None or 1
@@ -26,22 +27,24 @@ class DynamicSeparableConv2d(nn.Module):
         self.stride = stride
         self.dilation = dilation
         
-        self.conv = nn.Conv2d(
-            self.max_in_channels, self.max_in_channels, max(self.kernel_size_list), self.stride,
+        self.conv = nn.Conv2d(          # 该Conv2d对象仅仅是为了生成权重，在get_active_filter中提取该权重赋给forward中新的F.conv2d函数
+            self.max_in_channels, self.max_in_channels, max(self.kernel_size_list), self.stride, # 按最大kernel生成conv的权重
             groups=self.max_in_channels // self.channels_per_group, bias=False,
         )
         
         self._ks_set = list(set(self.kernel_size_list))
         self._ks_set.sort()  # e.g., [3, 5, 7]
+        
+        # target: kernel-size之间的转化矩阵注册入模型，例如7to5_matrix
         if self.KERNEL_TRANSFORM_MODE is not None:
             # register scaling parameters
             # 7to5_matrix, 5to3_matrix
             scale_params = {}
-            for i in range(len(self._ks_set) - 1):
+            for i in range(len(self._ks_set) - 1): # 遍历所有kernel 除了最大的kernel
                 ks_small = self._ks_set[i]
                 ks_larger = self._ks_set[i + 1]
                 param_name = '%dto%d' % (ks_larger, ks_small)
-                scale_params['%s_matrix' % param_name] = Parameter(torch.eye(ks_small ** 2))
+                scale_params['%s_matrix' % param_name] = Parameter(torch.eye(ks_small ** 2)) # eye生成对角线矩阵 转移矩阵是ks_small的平方维的对角线矩阵
             for name, param in scale_params.items():
                 self.register_parameter(name, param)
 
@@ -51,27 +54,31 @@ class DynamicSeparableConv2d(nn.Module):
         out_channel = in_channel
         max_kernel_size = max(self.kernel_size_list)
         
-        start, end = sub_filter_start_end(max_kernel_size, kernel_size)
-        filters = self.conv.weight[:out_channel, :in_channel, start:end, start:end]
-        if self.KERNEL_TRANSFORM_MODE is not None and kernel_size < max_kernel_size:
-            start_filter = self.conv.weight[:out_channel, :in_channel, :, :]  # start with max kernel
-            for i in range(len(self._ks_set) - 1, 0, -1):
+        start, end = sub_filter_start_end(max_kernel_size, kernel_size)                                     # 根据最大的kernel和想得到的kernel size，得到截取的共享权重的start和end index
+        filters = self.conv.weight[:out_channel, :in_channel, start:end, start:end]                         # 截取权重，注意conv2D的属性是(out_channels, in_channels/groups, kernelsize[0],ks[1])
+        
+        # target: 从source kernels size 线性变换到 target kernel，从最大的逐个变到target
+        if self.KERNEL_TRANSFORM_MODE is not None and kernel_size < max_kernel_size:                        # 当允许共享权重变形且目标ks小于最大的ks，执行
+            start_filter = self.conv.weight[:out_channel, :in_channel, :, :]                                # start with max kernel
+            for i in range(len(self._ks_set) - 1, 0, -1):                                                   # 倒着遍历，不包括0
                 src_ks = self._ks_set[i]
-                if src_ks <= kernel_size:
+                if src_ks <= kernel_size:                                                                   # source kernel不可能比目标矩阵小
                     break
                 target_ks = self._ks_set[i - 1]
                 start, end = sub_filter_start_end(src_ks, target_ks)
                 _input_filter = start_filter[:, :, start:end, start:end]
                 _input_filter = _input_filter.contiguous()
-                _input_filter = _input_filter.view(_input_filter.size(0), _input_filter.size(1), -1)
-                _input_filter = _input_filter.view(-1, _input_filter.size(2))
+                _input_filter = _input_filter.view(_input_filter.size(0), _input_filter.size(1), -1)        # 转为(cout, cin, tk**2) tk = target_kenelsize
+                _input_filter = _input_filter.view(-1, _input_filter.size(2))                               # 转为（cout*cin, tk**2）
                 _input_filter = F.linear(
-                    _input_filter, self.__getattr__('%dto%d_matrix' % (src_ks, target_ks)),
+                    _input_filter, self.__getattr__('%dto%d_matrix' % (src_ks, target_ks)),                 # (cout*cin, tk**2) * (tk**2，tk**2)后者是从本类实例中取转化矩阵{7to5_matrix,5to3_matrix}作为权重
                 )
-                _input_filter = _input_filter.view(filters.size(0), filters.size(1), target_ks ** 2)
-                _input_filter = _input_filter.view(filters.size(0), filters.size(1), target_ks, target_ks)
-                start_filter = _input_filter
+                _input_filter = _input_filter.view(filters.size(0), filters.size(1), target_ks ** 2)        # 转为(cout, cin, tk**2)
+                _input_filter = _input_filter.view(filters.size(0), filters.size(1), target_ks, target_ks)  # 转为(cout, cin, tk, tk)
+                start_filter = _input_filter                                                                # 将转变好的filter更新为起始kernel size, 
+            
             filters = start_filter
+        
         return filters
     
     def forward(self, x, kernel_size=None):
@@ -80,15 +87,16 @@ class DynamicSeparableConv2d(nn.Module):
         in_channel = x.size(1)
         assert in_channel % self.channels_per_group == 0
         
-        filters = self.get_active_filter(in_channel, kernel_size).contiguous()
+        filters = self.get_active_filter(in_channel, kernel_size).contiguous()                              # 调用上一步函数，filters更新为active的kernel size
         
         padding = get_same_padding(kernel_size)
         y = F.conv2d(
-            x, filters, None, self.stride, padding, self.dilation, in_channel // self.channels_per_group
+            x, filters, None, self.stride, padding, self.dilation, in_channel // self.channels_per_group    # conv2d实例仅仅是为了生成权重，forwad将权重提取后赋给filters送入F.conv2函数
         )
         return y
 
 
+# 1×1 point wise conv
 class DynamicPointConv2d(nn.Module):
     
     def __init__(self, max_in_channels, max_out_channels, kernel_size=1, stride=1, dilation=1):
@@ -100,7 +108,7 @@ class DynamicPointConv2d(nn.Module):
         self.stride = stride
         self.dilation = dilation
         
-        self.conv = nn.Conv2d(
+        self.conv = nn.Conv2d(                                                                              # conv2d实例仅仅是为了生成权重，forwad将权重提取后赋给filters送入F.conv2函数
             self.max_in_channels, self.max_out_channels, self.kernel_size, stride=self.stride, bias=False,
         )
         
@@ -113,7 +121,7 @@ class DynamicPointConv2d(nn.Module):
         filters = self.conv.weight[:out_channel, :in_channel, :, :].contiguous()
         
         padding = get_same_padding(self.kernel_size)
-        y = F.conv2d(x, filters, None, self.stride, padding, self.dilation, 1)
+        y = F.conv2d(x, filters, None, self.stride, padding, self.dilation, 1)                              # 将filters的权重送入F.conv2函数作计算前向值，梯度更新是按位操作的，所以会同步更新nn.Conv2d中的权重
         return y
 
 
@@ -135,7 +143,7 @@ class DynamicLinear(nn.Module):
             out_features = self.active_out_features
         
         in_features = x.size(1)
-        weight = self.linear.weight[:out_features, :in_features].contiguous()
+        weight = self.linear.weight[:out_features, :in_features].contiguous()                               # 取最大输出特征数对应通道数的权重作为weight
         bias = self.linear.bias[:out_features] if self.bias else None
         y = F.linear(x, weight, bias)
         return y

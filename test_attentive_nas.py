@@ -61,14 +61,14 @@ if __name__ == '__main__':
     # bn running stats calibration following Slimmable (https://arxiv.org/abs/1903.05134)
     # please consider trying a different random seed if you see a small accuracy drop
     with torch.no_grad():
-        model.reset_running_stats_for_calibration()
+        model.reset_running_stats_for_calibration()                         # 清零BN的数据（平均=0，方差=1，追踪的batch数量=0）
         for batch_idx, (images, _) in enumerate(train_loader):
-            if batch_idx >= args.post_bn_calibration_batch_num:
+            if batch_idx >= args.post_bn_calibration_batch_num:             # 仅前向指定数量次，计算bn
                 break
             images = images.cuda(args.gpu, non_blocking=True)
             model(images)  #forward only
 
-    model.eval()
+    model.eval()                                                            # 固定训练时bn的数量
     with torch.no_grad():
         criterion = nn.CrossEntropyLoss().cuda()
 
