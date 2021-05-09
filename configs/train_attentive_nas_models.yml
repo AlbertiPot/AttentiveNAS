@@ -6,7 +6,7 @@ arch: 'attentive_nas_dynamic_model'
 
 exp_name: "attentive_nas_dynamic_model_bestup3"
 
-batch_size_per_gpu: 32
+batch_size_per_gpu: 16 #32
 sandwich_rule: True
 
 grad_clip_value: 1.0
@@ -68,7 +68,7 @@ optimizer:
 
 lr_scheduler:
     method: "warmup_cosine_lr"
-    base_lr: 0.1
+    base_lr: 0.05 #0.1
     clamp_lr_percent: 0.0
 
 

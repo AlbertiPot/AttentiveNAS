@@ -1,0 +1,6 @@
+__pycache__/
+
+# 下载的预训练模型和sub-network lookup table
+attentive_nas_data 
+saved_models
+*.log

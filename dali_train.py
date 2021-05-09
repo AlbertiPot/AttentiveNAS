@@ -45,19 +45,19 @@ from sklearn.ensemble import RandomForestRegressor
 parser = argparse.ArgumentParser(description='AttentiveNAS Training')
 parser.add_argument('--config-file', default=None, type=str, 
                     help='training configuration')
-parser.add_argument('--machine-rank', default=0, type=int, 
+parser.add_argument('--machine-rank', default=0, type=int,                          # tcp初始化需要指定进程0的ip和port
                     help='machine rank, distributed setting')
 parser.add_argument('--num-machines', default=1, type=int, 
                     help='number of nodes, distributed setting')
 parser.add_argument('--dist-url', default="tcp://127.0.0.1:10001", type=str, 
-                    help='init method, distributed setting')
+                    help='init method, distributed setting')                        # nccl的tcp初始化方式，还可选择env、共享文件启动方式     
 
 logger = logging.get_logger(__name__)
 
 def build_args_and_env(run_args):
 
     assert run_args.config_file and os.path.isfile(run_args.config_file), 'cannot locate config file'
-    args = setup(run_args.config_file) # 从 config文件中读取超参数和解空间, 存入args 这个dict中
+    args = setup(run_args.config_file)                                              # 从 config文件中读取超参数和解空间, 存入args 这个dict中
     args.config_file = run_args.config_file
 
     #load config
@@ -162,22 +162,22 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第�
 
     # use sync batchnorm
     if getattr(args, 'sync_bn', False):
-        model.apply(
-                lambda m: setattr(m, 'need_sync', True))
+        model.apply(                                                                                # apply将fn应用于model的每一个子模块(可以由.children()返回的模块)
+                lambda m: setattr(m, 'need_sync', True))                                            # 匿名函数，变量是m，将apply返回的子模块送入m后，将m的'need_sync'设置为true
 
-    model = comm.get_parallel_model(model, args.gpu) #local rank
+    model = comm.get_parallel_model(model, args.gpu) #local rank                                    # 将模型进行分布式封装，即将model复制到每一个GPU上
 
     logger.info(model)
 
     criterion = loss_ops.CrossEntropyLossSmooth(args.label_smoothing).cuda(args.gpu)
     soft_criterion = loss_ops.KLLossSoft().cuda(args.gpu)
 
-    if not getattr(args, 'inplace_distill', True):
+    if not getattr(args, 'inplace_distill', True):                                                  # inplace_distill是用soft_criterion做为目标的
         soft_criterion = None
 
-    ## load dali_data_loader
+    # load dali_data_loader and bncal_loader
     args.dali_cpu = False
-    train_loader, val_loader =  build_dali_data_loader(args)
+    train_loader, val_loader, bncal_loader, bncal_sampler=  build_dali_data_loader(args)
     args.n_iters_per_epoch = len(train_loader)
 
     logger.info( f'building optimizer and lr scheduler, \
@@ -192,8 +192,9 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第�
     logger.info(args)
 
     for epoch in range(args.start_epoch, args.epochs):
-        # if args.distributed:
-        #     train_sampler.set_epoch(epoch)
+        
+        if args.distributed:
+            bncal_sampler.set_epoch(epoch)
 
         args.curr_epoch = epoch
         logger.info('Training lr {}'.format(lr_scheduler.get_lr()[0]))
@@ -205,7 +206,7 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第�
         if comm.is_master_process() or args.distributed:
             # validate supernet model
             validate(
-                train_loader, val_loader, model, criterion, args
+                bncal_loader, val_loader, model, criterion, args
             )
 
         if comm.is_master_process():
@@ -218,6 +219,9 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第�
                 args,
                 epoch,
             )
+
+        # train_loader.reset()      # train_loader 在 train_epoch中reset过，这里是提示用
+        #val_loader.reset()         # val_loader已经在validate的程序中reset过
 
 
 def train_epoch(
@@ -254,13 +258,13 @@ def train_epoch(
         target = data_list[0]['label'].squeeze().long()
 
         # total subnets to be sampled
-        num_subnet_training = max(2, getattr(args, 'num_arch_training', 2))
+        num_subnet_training = max(2, getattr(args, 'num_arch_training', 2))                                 # 子网训练的个数
         optimizer.zero_grad()
 
         ### compute gradients using sandwich rule ###
         # step 1 sample the largest network, apply regularization to only the largest network
         drop_connect_only_last_two_stages = getattr(args, 'drop_connect_only_last_two_stages', True)
-        model.module.sample_max_subnet()
+        model.module.sample_max_subnet()                                                                    # 采样最大子网
         model.module.set_dropout_rate(args.dropout, args.drop_connect, drop_connect_only_last_two_stages) #dropout for supernet
         output = model(images)
         loss = criterion(output, target)
@@ -346,11 +350,13 @@ def train_epoch(
         if batch_idx % args.print_freq == 0:
             progress.display(batch_idx, logger)
 
+    train_loader.reset()
+
     return top1.avg, top5.avg
 
 
 def validate(
-    train_loader, 
+    bncal_loader, 
     val_loader, 
     model, 
     criterion, 
@@ -364,7 +370,7 @@ def validate(
 
     acc1_list, acc5_list = attentive_nas_eval.dali_validate(
         subnets_to_be_evaluated,
-        train_loader,
+        bncal_loader,
         val_loader, 
         model, 
         criterion,

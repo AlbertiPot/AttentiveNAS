@@ -1,4 +1,9 @@
 import os
+
+import torch
+from .data_transform import get_data_transform
+from torchvision import datasets, transforms
+
 # dali import
 try:
     from nvidia.dali.plugin.pytorch import DALIClassificationIterator, LastBatchPolicy
@@ -62,6 +67,8 @@ def build_dali_data_loader(args):
     traindir = os.path.join(args.dataset_dir, "train")
     valdir = os.path.join(args.dataset_dir, "val")
 
+    eval_batch_size = min(args.batch_size, 16) if not getattr(args, 'eval_only', False) else args.batch_size
+
     pipetrain = create_dali_pipeline(batch_size=args.batch_size,                                 # batch_size, num_threads, device_id是decorator@pipeline_def的参数
                                 num_threads=args.data_loader_workers_per_gpu,
                                 device_id=args.local_rank,
@@ -75,7 +82,7 @@ def build_dali_data_loader(args):
     pipetrain.build()
     train_loader = DALIClassificationIterator(pipetrain, reader_name="Reader", last_batch_policy=LastBatchPolicy.DROP)
 
-    pipeval = create_dali_pipeline(batch_size=args.batch_size,
+    pipeval = create_dali_pipeline(batch_size=eval_batch_size,
                                 num_threads=args.data_loader_workers_per_gpu,
                                 device_id=args.local_rank,
                                 data_dir=valdir,
@@ -87,4 +94,27 @@ def build_dali_data_loader(args):
                                 is_training=False)
     pipeval.build()
     val_loader = DALIClassificationIterator(pipeval, reader_name="Reader", last_batch_policy=LastBatchPolicy.PARTIAL)
-    return train_loader, val_loader
+    
+    # build BN calirating loader
+    
+    bncal_transform = get_data_transform(args, is_training=True, augment=args.augment)
+    
+    if not getattr(args, 'data_loader_cross_validation', False):
+        bncal_dataset = datasets.ImageFolder(traindir, bncal_transform)
+
+    if args.distributed:
+        bncal_sampler = torch.utils.data.distributed.DistributedSampler(bncal_dataset)
+    else:
+        bncal_sampler = None
+
+    bncal_loader = torch.utils.data.DataLoader(
+        bncal_dataset,
+        batch_size=args.batch_size,
+        shuffle=(bncal_sampler is None),
+        sampler=bncal_sampler,
+        drop_last = getattr(args, 'drop_last', True),
+        num_workers=args.data_loader_workers_per_gpu,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, bncal_loader, bncal_sampler

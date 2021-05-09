@@ -97,7 +97,7 @@ def validate(
 
 def dali_validate(
     subnets_to_be_evaluated,
-    train_loader, 
+    bncal_loader, 
     val_loader, 
     model, 
     criterion, 
@@ -136,13 +136,23 @@ def dali_validate(
                 subnet.reset_running_stats_for_calibration()
 
                 # estimate running mean and running statistics
-                logger.info('Calirating bn running statistics')
-                for batch_idx, data_list in enumerate(train_loader):
+                logger.info('Calirating bn running statistics')                              
+                
+                # for batch_idx, data_list in enumerate(bncal_loader):
+                #     if batch_idx >= args.post_bn_calibration_batch_num:
+                #         break
+                #     images = data_list[0]['data']
+                #     subnet(images)  #forward only
+                # bncal_loader.reset()
+                
+                # dali data loader未走完epoch时不可以reset，对于仅仅计算64个iter的bn，用传统的pytorch dataloader
+                
+                for batch_idx, (images, _) in enumerate(bncal_loader):
                     if batch_idx >= args.post_bn_calibration_batch_num:
                         break
-                    # if getattr(args, 'use_clean_images_for_subnet_training', False):
-                    #     _, images = images
-                    images = data_list[0]['data']
+                    if getattr(args, 'use_clean_images_for_subnet_training', False):
+                        _, images = images
+                    images = images.cuda(args.gpu, non_blocking=True)
                     subnet(images)  #forward only
 
             acc1, acc5, loss, flops, params = dali_validate_one_subnet(                     # 注意这里是dali_validate_one_subnet

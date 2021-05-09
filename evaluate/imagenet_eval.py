@@ -114,7 +114,6 @@ def dali_validate_one_subnet(
 
     subnet.cuda(args.gpu)
     subnet.eval() # freeze again all running stats
-   
     for batch_idx, data_list in enumerate(val_loader):
         
         images = data_list[0]['data']
@@ -148,6 +147,8 @@ def dali_validate_one_subnet(
 
         if batch_idx % args.print_freq == 0:
             progress.display(batch_idx, logger)
+    
+    val_loader.reset()                                          # 每一次使用dali dataloader 过完整个epoch都要reset
 
     log_helper(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}, Top1: {top1.sum}/{top1.count}'
             .format(top1=top1, top5=top5), logger)

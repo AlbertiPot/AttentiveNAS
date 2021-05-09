@@ -49,6 +49,8 @@ parser.add_argument('--gpu', default=0, type=int, help='gpu id')
 run_args = parser.parse_args()
 
 if __name__ == '__main__':
+    
+    start = time.process_time()
 
     args = setup(run_args.config_file)
     args.model = run_args.model
@@ -173,5 +175,7 @@ if __name__ == '__main__':
         from evaluate.imagenet_eval import dali_validate_one_subnet
         acc1, acc5, loss, flops, params = dali_validate_one_subnet(val_loader, model, criterion, args)
         print(acc1, acc5, flops, params)
+    end = time.process_time()
+    print(end - start)
 
 
