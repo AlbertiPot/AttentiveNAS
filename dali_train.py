@@ -313,18 +313,18 @@ def train_epoch(
                 assert not args.inplace_distill                                                             # 若非inplace_distill，用小子网的输出和标签做loss
                 loss = criterion(output, target)            
 
-            loss.backward()                                                                                 # 对小子网的loss做反向传递
+            loss.backward()                                                                                 # 对最小子网以及中间网中best/worst的loss做反向传递
 
         #clip gradients if specfied
         if getattr(args, 'grad_clip_value', None):
             torch.nn.utils.clip_grad_value_(model.parameters(), args.grad_clip_value)
 
-        optimizer.step()
+        optimizer.step()                                                                                    # 多次backward的梯度叠加起来
 
         #accuracy measured on the local batch
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = accuracy(output, target, topk=(1, 5))                                                  # 这里测量的是最小网络的精度数据
         if args.distributed:
-            corr1, corr5, loss = acc1*args.batch_size, acc5*args.batch_size, loss.item()*args.batch_size    #just in case the batch size is different on different nodes
+            corr1, corr5, loss = acc1*args.batch_size, acc5*args.batch_size, loss.item()*args.batch_size    # just in case the batch size is different on different nodes
             stats = torch.tensor([corr1, corr5, loss, args.batch_size], device=args.gpu)
             dist.barrier()  # synchronizes all processes
             dist.all_reduce(stats, op=torch.distributed.ReduceOp.SUM) 

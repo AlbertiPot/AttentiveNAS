@@ -12,7 +12,7 @@ def build_optimizer(args, model):
     no_wd_params, wd_params = [], []
     for name, param in model.named_parameters():
         if param.requires_grad:
-            if ".bn" in name or ".bias" in name:
+            if ".bn" in name or ".bias" in name:                                                                # bn和bias不加weight decay
                 no_wd_params.append(param)
             else:
                 wd_params.append(param)
@@ -20,7 +20,7 @@ def build_optimizer(args, model):
     wd_params = nn.ParameterList(wd_params)
 
     weight_decay_weight = args.weight_decay_weight
-    weight_decay_bn_bias = args.weight_decay_bn_bias
+    weight_decay_bn_bias = args.weight_decay_bn_bias                                                            # bn和bias的weight decay值为0
     base_lr = args.lr_scheduler.base_lr
 
     params_group = [
