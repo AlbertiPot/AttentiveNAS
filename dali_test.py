@@ -168,7 +168,7 @@ if __name__ == '__main__':
             #images = images.cuda(args.gpu, non_blocking=True)              # 图像已经通过dali在gpu上处理了
             model(images)  #forward only
     
-    model.eval()                                                            # 固定训练时bn的数量
+    model.eval()                                                            # 固定训练时bn的参数
     with torch.no_grad():
         criterion = nn.CrossEntropyLoss().cuda()
 

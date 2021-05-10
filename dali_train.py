@@ -220,8 +220,8 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第�
                 epoch,
             )
 
-        # train_loader.reset()      # train_loader 在 train_epoch中reset过，这里是提示用
-        #val_loader.reset()         # val_loader已经在validate的程序中reset过
+        # train_loader.reset()          # train_loader 在 train_epoch中reset过，这里是提示用
+        # val_loader.reset()            # val_loader已经在validate的程序中reset过
 
 
 def train_epoch(
@@ -265,40 +265,40 @@ def train_epoch(
         # step 1 sample the largest network, apply regularization to only the largest network
         drop_connect_only_last_two_stages = getattr(args, 'drop_connect_only_last_two_stages', True)
         model.module.sample_max_subnet()                                                                    # 采样最大子网
-        model.module.set_dropout_rate(args.dropout, args.drop_connect, drop_connect_only_last_two_stages) #dropout for supernet
+        model.module.set_dropout_rate(args.dropout, args.drop_connect, drop_connect_only_last_two_stages)   # dropout for supernet
         output = model(images)
         loss = criterion(output, target)
         loss.backward()
 
         with torch.no_grad():
-            soft_logits = output.clone().detach()
+            soft_logits = output.clone().detach()                                                           # 保留最大子网输出的logits
 
         #step 2. sample the smallest network and several random networks
         sandwich_rule = getattr(args, 'sandwich_rule', True)
-        model.module.set_dropout_rate(0, 0, drop_connect_only_last_two_stages)  #reset dropout rate
-        for arch_id in range(1, num_subnet_training):
-            if arch_id == num_subnet_training-1 and sandwich_rule:
+        model.module.set_dropout_rate(0, 0, drop_connect_only_last_two_stages)                              # reset dropout rate
+        for arch_id in range(1, num_subnet_training):                                                       # 遍历除最大的子网之外的全部子网
+            if arch_id == num_subnet_training-1 and sandwich_rule:                                          # 采样最小子网
                 model.module.sample_min_subnet()
             else:
                 # attentive sampling with training loss as the surrogate performance metric 
                 if arch_sampler is not None:
                     sampling_method = args.sampler.method
                     if sampling_method in ['bestup', 'worstup']:
-                        target_flops = arch_sampler.sample_one_target_flops()
-                        candidate_archs = arch_sampler.sample_archs_according_to_flops(
-                            target_flops, n_samples=args.sampler.num_trials
+                        target_flops = arch_sampler.sample_one_target_flops()                               # 采样一个指定的flops
+                        candidate_archs = arch_sampler.sample_archs_according_to_flops(                     # 根据flops采样archs
+                            target_flops, n_samples=args.sampler.num_trials                                 # 返回一个list存着3个子网
                         )
                         my_pred_accs = []
-                        for arch in candidate_archs:
-                            model.module.set_active_subnet(**arch)
+                        for arch in candidate_archs:                                                        # 遍历3个中间子网
+                            model.module.set_active_subnet(**arch)                                          # 根据采样的参数，如resolution, width, expand_ratio,设置子网络
                             with torch.no_grad():
-                                my_pred_accs.append(-1.0 * criterion(model(images), target))
+                                my_pred_accs.append(-1.0 * criterion(model(images), target))                # 计算loss 并存于my_pred_accs，用于找best或者最好的
 
                         if sampling_method == 'bestup':
-                            idx, _ = max(enumerate(my_pred_accs), key=operator.itemgetter(1))                          
-                        else:
+                            idx, _ = max(enumerate(my_pred_accs), key=operator.itemgetter(1))               # 找最好的网络的idx，operator.itemgetter(1)定义了一个函数list中第一个值，作用于my_pred_accs的list，即返回list中acc的值而非idx               
+                        else:                                                                               
                             idx, _ = min(enumerate(my_pred_accs), key=operator.itemgetter(1))                          
-                        model.module.set_active_subnet(**candidate_archs[idx])  #reset
+                        model.module.set_active_subnet(**candidate_archs[idx])  #reset                      # 将最好的网络根据其idx激活，并set
                     else:
                         raise NotImplementedError
                 else:
@@ -308,12 +308,12 @@ def train_epoch(
             output = model(images)
 
             if soft_criterion:
-                loss = soft_criterion(output, soft_logits)
+                loss = soft_criterion(output, soft_logits)                                                  # 计算大子网和小网络之间的loss
             else:
-                assert not args.inplace_distill
-                loss = criterion(output, target)
+                assert not args.inplace_distill                                                             # 若非inplace_distill，用小子网的输出和标签做loss
+                loss = criterion(output, target)            
 
-            loss.backward()
+            loss.backward()                                                                                 # 对小子网的loss做反向传递
 
         #clip gradients if specfied
         if getattr(args, 'grad_clip_value', None):
@@ -324,7 +324,7 @@ def train_epoch(
         #accuracy measured on the local batch
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         if args.distributed:
-            corr1, corr5, loss = acc1*args.batch_size, acc5*args.batch_size, loss.item()*args.batch_size #just in case the batch size is different on different nodes
+            corr1, corr5, loss = acc1*args.batch_size, acc5*args.batch_size, loss.item()*args.batch_size    #just in case the batch size is different on different nodes
             stats = torch.tensor([corr1, corr5, loss, args.batch_size], device=args.gpu)
             dist.barrier()  # synchronizes all processes
             dist.all_reduce(stats, op=torch.distributed.ReduceOp.SUM) 
