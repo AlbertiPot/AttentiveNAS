@@ -23,19 +23,19 @@ import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
 
-from data.data_loader import build_data_loader
-from data.dali_data_loader import build_dali_data_loader
+from .data.data_loader import build_data_loader
+from .data.dali_data_loader import build_dali_data_loader
 
-from utils.config import setup
-import utils.saver as saver
-from utils.progress import AverageMeter, ProgressMeter, accuracy
-import utils.comm as comm
-import utils.logging as logging
-from evaluate import attentive_nas_eval as attentive_nas_eval
-from sampler.attentive_nas_sampler import ArchSampler as ArchSampler
-from solver import build_optimizer, build_lr_scheduler
-import utils.loss_ops as loss_ops 
-import models
+from .utils.config import setup
+from .utils import saver as saver
+from .utils.progress import AverageMeter, ProgressMeter, accuracy
+from .utils import comm as comm
+from .utils import logging as logging
+from .evaluate import attentive_nas_eval as attentive_nas_eval
+from .sampler.attentive_nas_sampler import ArchSampler as ArchSampler
+from .solver import build_optimizer, build_lr_scheduler
+from .utils import loss_ops as loss_ops 
+from . import models
 from copy import deepcopy
 import numpy as np
 import joblib 
