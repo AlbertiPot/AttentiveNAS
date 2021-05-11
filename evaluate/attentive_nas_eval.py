@@ -106,7 +106,7 @@ def dali_validate(
     bn_calibration=True,
 ):
     supernet = model.module \
-        if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model          # torch.nn.parallel.DistributedDataParallel封装model为module，这里是将封装的模型从module里释放出来
 
     results = []
     top1_list, top5_list = [],  []

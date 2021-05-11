@@ -203,7 +203,7 @@ def main_worker(gpu, ngpus_per_node, args): # gpu就是pid进程号，放在第�
         acc1, acc5 = train_epoch(epoch, model, train_loader, optimizer, criterion, args, \
                 arch_sampler=arch_sampler, soft_criterion=soft_criterion, lr_scheduler=lr_scheduler)
 
-        if comm.is_master_process() or args.distributed:
+        if comm.is_master_process() or args.distributed:                                            # 无论如何都是使用分布式验证，即两个进程都参与validata
             # validate supernet model
             validate(
                 bncal_loader, val_loader, model, criterion, args
